@@ -22,3 +22,5 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+VITE_GOOGLE_MAPS_KEY=AIzaSyA_z0QBC3bFYpVrHbzc2iP4af03IC9o_bc

@@ -1,10 +1,11 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useParams, useNavigate } from "react-router-dom";
-import { doc, getDoc, addDoc, collection, onSnapshot, updateDoc, serverTimestamp } from "firebase/firestore";
+import { doc, getDoc, addDoc, collection, onSnapshot, updateDoc, serverTimestamp, query, where, getDocs } from "firebase/firestore";
 import { db } from "../../firebase/config";
 import { useAuth } from "../../context/AuthContext";
 import toast from "react-hot-toast";
+import { loadGoogleMaps } from "../../firebase/config";
 
 export default function BookElectrician() {
   const { id } = useParams();
@@ -18,6 +19,15 @@ export default function BookElectrician() {
   const [bookingId, setBookingId] = useState(null);
   const [bookingData, setBookingData] = useState(null);
   const [timeLeft, setTimeLeft] = useState(null);
+
+  // Google Maps
+  const [map, setMap] = useState(null);
+  const mapRef = useRef(null);
+
+  // Customer Location (for booking)
+  const [userLat, setUserLat] = useState(null);
+  const [userLng, setUserLng] = useState(null);
+  const [userAddress, setUserAddress] = useState("");
 
   // Fetch Electrician
   useEffect(() => {
@@ -34,7 +44,20 @@ export default function BookElectrician() {
     fetchElectrician();
   }, [id]);
 
-  // Check for existing active booking with this electrician when component loads
+  // Auto-detect Customer Location (optional - can be manual too)
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setUserLat(position.coords.latitude);
+          setUserLng(position.coords.longitude);
+        },
+        () => toast.info("Please allow location access for better tracking")
+      );
+    }
+  }, []);
+
+  // Check for existing active booking
   useEffect(() => {
     if (!currentUser?.uid || !id) return;
 
@@ -42,7 +65,7 @@ export default function BookElectrician() {
       try {
         const q = query(
           collection(db, "bookings"),
-          where("customerId", "==", currentUser.uid),
+          where("customerId", "==", currentUser.uid)
         );
         const snap = await getDocs(q);
         
@@ -51,15 +74,13 @@ export default function BookElectrician() {
             d.data().status === "accepted" || d.data().status === "pending"
           );
           if (docs.length > 0) {
-            const existingBooking = docs[0];
-            setBookingId(existingBooking.id);
+            setBookingId(docs[0].id);
           }
         }
       } catch (err) {
         console.log("Checking for existing booking:", err);
       }
     }
-
     checkExistingBooking();
   }, [currentUser, id]);
 
@@ -72,7 +93,6 @@ export default function BookElectrician() {
         const data = snap.data();
         setBookingData(data);
 
-        // Start or restart timer if booking is accepted
         if (data.status === "accepted" && data.estimatedArrival) {
           const arrivalMinutes = data.estimatedArrival;
           const setTime = data.estimatedArrivalSetAt?.toDate?.() || new Date();
@@ -102,6 +122,41 @@ export default function BookElectrician() {
     return () => clearInterval(interval);
   };
 
+  // Initialize Map when booking is accepted
+  useEffect(() => {
+    if (bookingData?.status === "accepted" && bookingData.customerLat && bookingData.customerLng) {
+      loadGoogleMaps(() => {
+        if (!mapRef.current) return;
+
+        const mapInstance = new window.google.maps.Map(mapRef.current, {
+          zoom: 16,
+          center: { lat: bookingData.customerLat, lng: bookingData.customerLng },
+          mapTypeId: "roadmap",
+        });
+
+        setMap(mapInstance);
+
+        // Customer Location Pin
+        new window.google.maps.Marker({
+          position: { lat: bookingData.customerLat, lng: bookingData.customerLng },
+          map: mapInstance,
+          title: "Your Location",
+          icon: "http://maps.google.com/mapfiles/ms/icons/blue-dot.png"
+        });
+
+        // Electrician Location (if available)
+        if (bookingData.electricianLat && bookingData.electricianLng) {
+          new window.google.maps.Marker({
+            position: { lat: bookingData.electricianLat, lng: bookingData.electricianLng },
+            map: mapInstance,
+            title: "Electrician",
+            icon: "http://maps.google.com/mapfiles/ms/icons/red-dot.png"
+          });
+        }
+      });
+    }
+  }, [bookingData]);
+
   const handleRequest = async (e) => {
     e.preventDefault();
     const parsedAmount = parseFloat(offerAmount);
@@ -115,6 +170,9 @@ export default function BookElectrician() {
       const docRef = await addDoc(collection(db, "bookings"), {
         customerId: currentUser.uid,
         customerName: currentUser.displayName || currentUser.email,
+        customerLat: userLat,
+        customerLng: userLng,
+        customerAddress: userAddress || "Location captured",
         electricianId: electrician.id,
         electricianName: electrician.name,
         rateOffer: parsedAmount,
@@ -222,6 +280,20 @@ export default function BookElectrician() {
                   <p style={styles.timerSub}>minutes remaining</p>
                 </div>
               )}
+
+              {/* Google Map */}
+              <div style={{ margin: "25px 0" }}>
+                <h3 style={{ marginBottom: 10, color: "#4ade80" }}>Live Tracking Map</h3>
+                <div 
+                  ref={mapRef} 
+                  style={{ 
+                    height: "380px", 
+                    borderRadius: 16, 
+                    border: "2px solid #4ade80",
+                    background: "#111" 
+                  }}
+                />
+              </div>
 
               <div style={{ display: "flex", gap: 12, marginTop: 25 }}>
                 <button onClick={handleOpenChat} style={styles.chatBtn}>

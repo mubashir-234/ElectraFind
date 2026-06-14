@@ -1,441 +1,413 @@
-import React, { useState, useEffect } from "react";
+// src/components/FeedbackModal.jsx
+import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { doc, updateDoc, collection, addDoc, getDocs, query, where, serverTimestamp } from "firebase/firestore";
+import { doc, updateDoc, getDoc, serverTimestamp } from "firebase/firestore";
 import { db } from "../firebase/config";
-import { useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
 
-// ─── Animation Variants ───────────────────────────────────────────────────────
-const backdropVariants = {
-  hidden: { opacity: 0 },
-  visible: { opacity: 1, transition: { duration: 0.35 } },
-  exit:   { opacity: 0, transition: { duration: 0.3 } },
+// ─── Step definitions ────────────────────────────────────────────────────────
+const STEPS = ["extra_charge", "behaviour", "rating"];
+
+const behaviourOptions = [
+  { id: "professional",  label: "Professional",    icon: "💼" },
+  { id: "friendly",     label: "Friendly",         icon: "😊" },
+  { id: "punctual",     label: "On Time",          icon: "⏱️" },
+  { id: "skilled",      label: "Highly Skilled",   icon: "🔧" },
+  { id: "rude",         label: "Rude",             icon: "😠" },
+  { id: "late",         label: "Late Arrival",     icon: "⌛" },
+  { id: "unprepared",   label: "Unprepared",       icon: "❓" },
+  { id: "overpriced",   label: "Overpriced",       icon: "💸" },
+];
+
+const slideVariants = {
+  enter: (dir) => ({ x: dir > 0 ? 80 : -80, opacity: 0 }),
+  center:        { x: 0, opacity: 1 },
+  exit:  (dir) => ({ x: dir > 0 ? -80 : 80, opacity: 0 }),
 };
 
-const cardVariants = {
-  hidden:  { opacity: 0, scale: 0.88, y: 40 },
-  visible: { opacity: 1, scale: 1,    y: 0,  transition: { type: "spring", damping: 22, stiffness: 280, delay: 0.05 } },
-  exit:    { opacity: 0, scale: 0.92, y: -20, transition: { duration: 0.28 } },
-};
+const FeedbackModal = ({ isOpen, bookingId, electricianUid, electricianName, onClose }) => {
+  const [step, setStep]                   = useState(0);
+  const [direction, setDirection]         = useState(1);
+  const [extraCharge, setExtraCharge]     = useState(null); // true | false
+  const [selectedBehaviours, setSelected] = useState([]);
+  const [rating, setRating]               = useState(0);
+  const [hoveredStar, setHoveredStar]     = useState(0);
+  const [comment, setComment]             = useState("");
+  const [submitting, setSubmitting]       = useState(false);
 
-const thankYouVariants = {
-  hidden:  { opacity: 0, scale: 0.7 },
-  visible: { opacity: 1, scale: 1, transition: { type: "spring", damping: 18, stiffness: 240 } },
-  exit:    { opacity: 0, scale: 1.1, transition: { duration: 0.4 } },
-};
+  if (!isOpen) return null;
 
-const staggerChild = {
-  hidden:  { opacity: 0, y: 18 },
-  visible: (i) => ({ opacity: 1, y: 0, transition: { delay: 0.1 + i * 0.08, duration: 0.38, ease: [0.22, 1, 0.36, 1] } }),
-};
-
-// ─── Star Rating Component ────────────────────────────────────────────────────
-function StarRating({ value, onChange }) {
-  const [hover, setHover] = useState(0);
-  return (
-    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-      {[1, 2, 3, 4, 5].map((star) => {
-        const filled = star <= (hover || value);
-        return (
-          <motion.button
-            key={star}
-            type="button"
-            onClick={() => onChange(star)}
-            onMouseEnter={() => setHover(star)}
-            onMouseLeave={() => setHover(0)}
-            whileHover={{ scale: 1.3 }}
-            whileTap={{ scale: 0.9 }}
-            style={{
-              background: "none", border: "none", cursor: "pointer", padding: 0,
-              fontSize: 34,
-              color: filled ? "#FACC15" : "rgba(255,255,255,0.12)",
-              filter: filled ? "drop-shadow(0 0 6px rgba(250,204,21,0.55))" : "none",
-              transition: "color 0.15s, filter 0.15s",
-            }}
-          >
-            ★
-          </motion.button>
-        );
-      })}
-      <span style={{
-        marginLeft: 8, fontSize: 13, fontWeight: 700, color: "#FACC15",
-        background: "rgba(250,204,21,0.1)", padding: "4px 12px", borderRadius: 20,
-      }}>
-        {value} / 5
-      </span>
-    </div>
-  );
-}
-
-// ─── Option Button Component ──────────────────────────────────────────────────
-function OptionBtn({ label, emoji, selected, onClick, variant = "default" }) {
-  const activeStyles = {
-    default: { background: "rgba(250,204,21,0.1)", border: "1.5px solid #FACC15", color: "#FACC15" },
-    danger:  { background: "rgba(239,68,68,0.1)",  border: "1.5px solid #EF4444", color: "#EF4444" },
-    success: { background: "rgba(16,185,129,0.1)", border: "1.5px solid #10B981", color: "#10B981" },
-  };
-  return (
-    <motion.button
-      type="button"
-      onClick={onClick}
-      whileHover={{ scale: 1.04 }}
-      whileTap={{ scale: 0.95 }}
-      style={{
-        flex: 1,
-        padding: "13px 10px",
-        background: "rgba(255,255,255,0.03)",
-        border: "1.5px solid rgba(255,255,255,0.08)",
-        borderRadius: 14,
-        color: "rgba(255,255,255,0.65)",
-        fontSize: 14,
-        fontWeight: 600,
-        cursor: "pointer",
-        fontFamily: "'DM Sans', sans-serif",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        gap: 6,
-        transition: "all 0.18s ease",
-        ...(selected ? activeStyles[variant] : {}),
-      }}
-    >
-      {emoji && <span style={{ fontSize: 22 }}>{emoji}</span>}
-      <span>{label}</span>
-    </motion.button>
-  );
-}
-
-// ─── Thank You Screen ─────────────────────────────────────────────────────────
-function ThankYouScreen({ electricianName, onDone }) {
-  const [countdown, setCountdown] = useState(90);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) { clearInterval(timer); onDone(); return 0; }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [onDone]);
-
-  const progress = ((90 - countdown) / 90) * 100;
-
-  return (
-    <motion.div
-      key="thankyou"
-      variants={thankYouVariants}
-      initial="hidden"
-      animate="visible"
-      exit="exit"
-      style={{ textAlign: "center", padding: "10px 0" }}
-    >
-      {/* Animated checkmark burst */}
-      <motion.div
-        animate={{ scale: [0.8, 1.15, 1], rotate: [0, -8, 8, 0] }}
-        transition={{ duration: 0.7, ease: "easeOut" }}
-        style={{ fontSize: 72, marginBottom: 4, lineHeight: 1 }}
-      >
-        🎉
-      </motion.div>
-
-      <motion.div
-        animate={{ scale: [1, 1.06, 1] }}
-        transition={{ repeat: Infinity, duration: 2.2, ease: "easeInOut" }}
-      >
-        <h2 style={{ margin: "12px 0 4px", fontSize: 26, fontWeight: 900, color: "#fff", letterSpacing: "-0.5px" }}>
-          Thank You!
-        </h2>
-      </motion.div>
-
-      <p style={{ margin: "0 0 6px", fontSize: 17, fontWeight: 700, color: "#FACC15" }}>
-        Feedback Submitted ⚡
-      </p>
-      <p style={{ margin: "0 0 28px", fontSize: 13.5, color: "rgba(255,255,255,0.4)", lineHeight: 1.6 }}>
-        Your review for <strong style={{ color: "rgba(255,255,255,0.7)" }}>{electricianName || "the electrician"}</strong> has been recorded. It helps us keep quality high.
-      </p>
-
-      {/* Progress bar */}
-      <div style={{ background: "rgba(255,255,255,0.06)", borderRadius: 100, height: 5, marginBottom: 12, overflow: "hidden" }}>
-        <motion.div
-          style={{ height: "100%", background: "#FACC15", borderRadius: 100 }}
-          animate={{ width: `${progress}%` }}
-          transition={{ duration: 0.9, ease: "linear" }}
-        />
-      </div>
-      <p style={{ fontSize: 12, color: "rgba(255,255,255,0.3)", margin: "0 0 20px" }}>
-        Returning to dashboard in {countdown}s...
-      </p>
-
-      <motion.button
-        onClick={onDone}
-        whileHover={{ scale: 1.04 }}
-        whileTap={{ scale: 0.96 }}
-        style={{
-          padding: "13px 32px", background: "#FACC15", border: "none", borderRadius: 12,
-          color: "#0f0f0f", fontWeight: 700, fontSize: 15, cursor: "pointer",
-          fontFamily: "'DM Sans', sans-serif",
-        }}
-      >
-        Go to Dashboard →
-      </motion.button>
-    </motion.div>
-  );
-}
-
-// ─── Main FeedbackModal ───────────────────────────────────────────────────────
-export default function FeedbackModal({ isOpen, bookingId, electricianUid, electricianName, onClose }) {
-  const navigate = useNavigate();
-  const [step, setStep] = useState("form"); // "form" | "thankyou"
-  const [rating, setRating] = useState(0);
-  const [extraMoney, setExtraMoney] = useState(null); // "yes" | "no"
-  const [behaviour, setBehaviour] = useState(null);   // "good" | "normal" | "bad"
-  const [submitting, setSubmitting] = useState(false);
-
-  // Reset state each time modal opens
-  useEffect(() => {
-    if (isOpen) {
-      setStep("form");
-      setRating(0);
-      setExtraMoney(null);
-      setBehaviour(null);
-      setSubmitting(false);
-    }
-  }, [isOpen]);
-
-  const handleDone = () => {
-    if (onClose) onClose();
-    navigate("/dashboard");
+  // ── helpers ──────────────────────────────────────────────────────────────
+  const go = (delta) => {
+    setDirection(delta);
+    setStep((s) => s + delta);
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const toggleBehaviour = (id) => {
+    setSelected((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
 
-    if (rating === 0)       return toast.error("Please rate the electrician!");
-    if (!extraMoney)        return toast.error("Please answer the extra money question.");
-    if (!behaviour)         return toast.error("Please select the electrician's behaviour.");
+  const canContinue = () => {
+    if (step === 0) return extraCharge !== null;
+    if (step === 1) return selectedBehaviours.length > 0;
+    if (step === 2) return rating > 0;
+    return false;
+  };
 
+  const handleSubmit = async () => {
+    if (!bookingId || !electricianUid || rating === 0) return;
     setSubmitting(true);
     try {
-      // 1. Save feedback review doc
-      await addDoc(collection(db, "reviews"), {
-        bookingId,
-        electricianUid,
-        rating,
-        askedExtraMoney: extraMoney === "yes",
-        behaviour,
-        createdAt: serverTimestamp(),
+      await updateDoc(doc(db, "bookings", bookingId), {
+        feedbackRating:      rating,
+        feedbackComment:     comment,
+        feedbackBehaviours:  selectedBehaviours,
+        feedbackExtraCharge: extraCharge,
+        feedbackSubmitted:   true,
+        feedbackAt:          serverTimestamp(),
       });
 
-      // 2. Update booking with feedbackSubmitted flag
-      if (bookingId) {
-        await updateDoc(doc(db, "bookings", bookingId), {
-          feedbackSubmitted: true,
-          feedback: {
-            rating,
-            askedExtraMoney: extraMoney === "yes",
-            behaviour,
-            submittedAt: serverTimestamp(),
-          },
-        });
-      }
+      const elecSnap = await getDoc(doc(db, "electricians", electricianUid));
+      const prev     = elecSnap.data() || {};
+      const prevTotal   = prev.totalReviews  || 0;
+      const prevRating  = prev.rating        || 0;
+      const newAvg      = parseFloat(
+        ((prevRating * prevTotal + rating) / (prevTotal + 1)).toFixed(2)
+      );
 
-      // 3. Recalculate electrician average rating
-      if (electricianUid) {
-        const q = query(collection(db, "reviews"), where("electricianUid", "==", electricianUid));
-        const snap = await getDocs(q);
-        let total = 0;
-        snap.forEach((d) => { total += d.data().rating || 0; });
-        const avg = parseFloat((total / snap.size).toFixed(1));
+      await updateDoc(doc(db, "electricians", electricianUid), {
+        rating:       newAvg,
+        totalReviews: prevTotal + 1,
+      });
 
-        const elecQ = query(collection(db, "electricians"), where("uid", "==", electricianUid));
-        const elecSnap = await getDocs(elecQ);
-        if (!elecSnap.empty) {
-          await updateDoc(doc(db, "electricians", elecSnap.docs[0].id), {
-            averageRating: avg,
-            totalReviews: snap.size,
-          });
-        }
-      }
-
-      setStep("thankyou");
+      toast.success("Thank you for your feedback! 🎉");
+      onClose();
     } catch (err) {
-      console.error("Feedback submission error:", err);
-      toast.error("Failed to submit feedback. Please try again.");
+      console.error(err);
+      toast.error("Failed to submit feedback");
     } finally {
       setSubmitting(false);
     }
   };
 
+  // ── step labels ──────────────────────────────────────────────────────────
+  const stepLabel = ["Extra Charge", "Behaviour", "Your Rating"];
+
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div
-          key="backdrop"
-          variants={backdropVariants}
-          initial="hidden"
-          animate="visible"
-          exit="exit"
-          style={S.backdrop}
-        >
-          <motion.div
-            key="card"
-            variants={cardVariants}
-            initial="hidden"
-            animate="visible"
-            exit="exit"
-            style={S.card}
-          >
-            <AnimatePresence mode="wait">
+    <div style={S.overlay}>
+      <motion.div
+        initial={{ opacity: 0, scale: 0.92, y: 20 }}
+        animate={{ opacity: 1, scale: 1,    y: 0  }}
+        exit   ={{ opacity: 0, scale: 0.9,  y: 20 }}
+        transition={{ type: "spring", stiffness: 320, damping: 28 }}
+        style={S.card}
+      >
+        {/* ── Header ── */}
+        <div style={S.header}>
+          <div style={S.avatarCircle}>
+            {electricianName?.[0]?.toUpperCase() || "E"}
+          </div>
+          <div>
+            <p style={S.headerTitle}>Rate your experience</p>
+            <p style={S.headerSub}>with {electricianName}</p>
+          </div>
+        </div>
 
-              {/* ── FORM STEP ─────────────────────────────────────────── */}
-              {step === "form" && (
-                <motion.div key="form" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: 0.2 } }}>
-                  
-                  {/* Header */}
-                  <motion.div custom={0} variants={staggerChild} initial="hidden" animate="visible" style={S.header}>
-                    <div style={S.iconRing}>⚡</div>
-                    <h3 style={S.title}>Rate Your Experience</h3>
-                    <p style={S.subtitle}>
-                      Help keep ElectraFind quality high — your feedback matters.
-                    </p>
-                  </motion.div>
+        {/* ── Progress dots ── */}
+        <div style={S.dots}>
+          {STEPS.map((_, i) => (
+            <motion.div
+              key={i}
+              animate={{
+                width:      i === step ? 28 : 8,
+                background: i <= step ? "#FACC15" : "rgba(255,255,255,0.15)",
+              }}
+              transition={{ duration: 0.35 }}
+              style={S.dot}
+            />
+          ))}
+        </div>
+        <p style={S.stepLabel}>{stepLabel[step]}</p>
 
-                  <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+        {/* ── Slide content ── */}
+        <div style={{ overflow: "hidden", minHeight: 260 }}>
+          <AnimatePresence custom={direction} mode="wait">
+            {/* STEP 0 – Extra charge */}
+            {step === 0 && (
+              <motion.div
+                key="step0"
+                custom={direction}
+                variants={slideVariants}
+                initial="enter"
+                animate="center"
+                exit="exit"
+                transition={{ duration: 0.28, ease: "easeInOut" }}
+                style={S.stepContent}
+              >
+                <p style={S.question}>
+                  Did the electrician ask for <span style={S.accent}>extra money</span> beyond the agreed rate?
+                </p>
+                <div style={S.choiceRow}>
+                  <motion.button
+                    whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }}
+                    onClick={() => setExtraCharge(true)}
+                    style={{
+                      ...S.choiceBtn,
+                      ...(extraCharge === true ? S.choiceActive : {}),
+                    }}
+                  >
+                    <span style={S.choiceIcon}>💰</span>
+                    <span>Yes, they did</span>
+                  </motion.button>
+                  <motion.button
+                    whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }}
+                    onClick={() => setExtraCharge(false)}
+                    style={{
+                      ...S.choiceBtn,
+                      ...(extraCharge === false ? S.choiceGoodActive : {}),
+                    }}
+                  >
+                    <span style={S.choiceIcon}>✅</span>
+                    <span>No, all good</span>
+                  </motion.button>
+                </div>
+              </motion.div>
+            )}
 
-                    {/* Q1 — Star Rating */}
-                    <motion.div custom={1} variants={staggerChild} initial="hidden" animate="visible" style={S.section}>
-                      <label style={S.label}>
-                        <span style={S.qNum}>01</span>
-                        Rate the electrician's work
-                      </label>
-                      <div style={S.sectionBody}>
-                        <StarRating value={rating} onChange={setRating} />
-                      </div>
-                    </motion.div>
-
-                    {/* Q2 — Extra money */}
-                    <motion.div custom={2} variants={staggerChild} initial="hidden" animate="visible" style={S.section}>
-                      <label style={S.label}>
-                        <span style={S.qNum}>02</span>
-                        Did the electrician ask for extra money?
-                      </label>
-                      <div style={{ display: "flex", gap: 10 }}>
-                        <OptionBtn
-                          label="Yes" emoji="⚠️"
-                          selected={extraMoney === "yes"}
-                          onClick={() => setExtraMoney("yes")}
-                          variant="danger"
-                        />
-                        <OptionBtn
-                          label="No" emoji="✅"
-                          selected={extraMoney === "no"}
-                          onClick={() => setExtraMoney("no")}
-                          variant="success"
-                        />
-                      </div>
-                    </motion.div>
-
-                    {/* Q3 — Behaviour */}
-                    <motion.div custom={3} variants={staggerChild} initial="hidden" animate="visible" style={S.section}>
-                      <label style={S.label}>
-                        <span style={S.qNum}>03</span>
-                        What was the electrician's behaviour?
-                      </label>
-                      <div style={{ display: "flex", gap: 10 }}>
-                        <OptionBtn label="Good"   emoji="😊" selected={behaviour === "good"}   onClick={() => setBehaviour("good")}   variant="success" />
-                        <OptionBtn label="Normal" emoji="😐" selected={behaviour === "normal"} onClick={() => setBehaviour("normal")} variant="default" />
-                        <OptionBtn label="Bad"    emoji="😠" selected={behaviour === "bad"}    onClick={() => setBehaviour("bad")}    variant="danger"  />
-                      </div>
-                    </motion.div>
-
-                    {/* Submit */}
-                    <motion.div custom={4} variants={staggerChild} initial="hidden" animate="visible">
+            {/* STEP 1 – Behaviour */}
+            {step === 1 && (
+              <motion.div
+                key="step1"
+                custom={direction}
+                variants={slideVariants}
+                initial="enter"
+                animate="center"
+                exit="exit"
+                transition={{ duration: 0.28, ease: "easeInOut" }}
+                style={S.stepContent}
+              >
+                <p style={S.question}>How would you describe the electrician's behaviour?</p>
+                <div style={S.tagsGrid}>
+                  {behaviourOptions.map((opt) => {
+                    const active = selectedBehaviours.includes(opt.id);
+                    return (
                       <motion.button
-                        type="submit"
-                        disabled={submitting}
-                        whileHover={{ scale: submitting ? 1 : 1.02 }}
-                        whileTap={{ scale: submitting ? 1 : 0.97 }}
-                        style={{ ...S.submitBtn, opacity: submitting ? 0.7 : 1 }}
+                        key={opt.id}
+                        whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.94 }}
+                        onClick={() => toggleBehaviour(opt.id)}
+                        style={{ ...S.tag, ...(active ? S.tagActive : {}) }}
                       >
-                        {submitting ? "Submitting..." : "Submit Feedback ⚡"}
+                        <span>{opt.icon}</span>
+                        <span>{opt.label}</span>
                       </motion.button>
-                    </motion.div>
+                    );
+                  })}
+                </div>
+              </motion.div>
+            )}
 
-                  </form>
-                </motion.div>
-              )}
-
-              {/* ── THANK YOU STEP ────────────────────────────────────── */}
-              {step === "thankyou" && (
-                <ThankYouScreen
-                  key="thankyou"
-                  electricianName={electricianName}
-                  onDone={handleDone}
+            {/* STEP 2 – Star rating + comment */}
+            {step === 2 && (
+              <motion.div
+                key="step2"
+                custom={direction}
+                variants={slideVariants}
+                initial="enter"
+                animate="center"
+                exit="exit"
+                transition={{ duration: 0.28, ease: "easeInOut" }}
+                style={S.stepContent}
+              >
+                <p style={S.question}>How would you rate the overall service?</p>
+                <div style={S.stars}>
+                  {[1, 2, 3, 4, 5].map((star) => {
+                    const filled = star <= (hoveredStar || rating);
+                    return (
+                      <motion.button
+                        key={star}
+                        whileHover={{ scale: 1.25 }}
+                        whileTap={{ scale: 0.9 }}
+                        onMouseEnter={() => setHoveredStar(star)}
+                        onMouseLeave={() => setHoveredStar(0)}
+                        onClick={() => setRating(star)}
+                        style={{ ...S.star, color: filled ? "#FACC15" : "#333" }}
+                      >
+                        ★
+                      </motion.button>
+                    );
+                  })}
+                </div>
+                {rating > 0 && (
+                  <motion.p
+                    initial={{ opacity: 0, y: -6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    style={S.ratingLabel}
+                  >
+                    {["", "Poor", "Fair", "Good", "Great", "Excellent!"][rating]}
+                  </motion.p>
+                )}
+                <textarea
+                  placeholder="Write a comment (optional)..."
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  style={S.textarea}
                 />
-              )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
 
-            </AnimatePresence>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+        {/* ── Actions ── */}
+        <div style={S.actions}>
+          {step > 0 && (
+            <motion.button
+              whileTap={{ scale: 0.95 }}
+              onClick={() => go(-1)}
+              style={S.backBtn}
+            >
+              ← Back
+            </motion.button>
+          )}
+
+          {step < STEPS.length - 1 ? (
+            <motion.button
+              whileTap={{ scale: canContinue() ? 0.96 : 1 }}
+              onClick={() => canContinue() && go(1)}
+              disabled={!canContinue()}
+              style={{ ...S.nextBtn, opacity: canContinue() ? 1 : 0.35 }}
+            >
+              Continue →
+            </motion.button>
+          ) : (
+            <motion.button
+              whileTap={{ scale: canContinue() && !submitting ? 0.96 : 1 }}
+              onClick={handleSubmit}
+              disabled={!canContinue() || submitting}
+              style={{ ...S.nextBtn, opacity: canContinue() && !submitting ? 1 : 0.35 }}
+            >
+              {submitting ? "Submitting..." : "Submit Feedback ✓"}
+            </motion.button>
+          )}
+        </div>
+
+        <button onClick={onClose} style={S.skipBtn}>
+          Skip for now
+        </button>
+      </motion.div>
+    </div>
   );
-}
+};
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
+// ─── Styles ──────────────────────────────────────────────────────────────────
 const S = {
-  backdrop: {
+  overlay: {
     position: "fixed", inset: 0,
-    background: "rgba(8, 8, 10, 0.88)",
-    backdropFilter: "blur(10px)",
+    background: "rgba(0,0,0,0.88)",
     display: "flex", alignItems: "center", justifyContent: "center",
-    zIndex: 9999, padding: 16,
+    zIndex: 3000,
+    backdropFilter: "blur(6px)",
+    padding: "0 16px",
   },
   card: {
-    width: "100%", maxWidth: 420,
-    background: "linear-gradient(160deg, #131318 0%, #0e0e13 100%)",
-    border: "1px solid rgba(255,255,255,0.07)",
+    background: "#111",
     borderRadius: 24,
-    padding: "28px 28px 28px",
-    boxShadow: "0 28px 60px rgba(0,0,0,0.65), 0 0 0 1px rgba(250,204,21,0.04)",
-    color: "#fff",
+    width: "100%", maxWidth: 420,
+    border: "1px solid rgba(255,255,255,0.08)",
+    padding: "28px 28px 24px",
+    boxShadow: "0 32px 64px rgba(0,0,0,0.5)",
     fontFamily: "'DM Sans', sans-serif",
-    overflowY: "auto",
-    maxHeight: "92vh",
+    color: "#fff",
   },
-  header: { textAlign: "center", marginBottom: 24 },
-  iconRing: {
-    width: 56, height: 56, borderRadius: "50%",
-    background: "rgba(250,204,21,0.08)",
-    border: "1px solid rgba(250,204,21,0.2)",
-    display: "inline-flex", alignItems: "center", justifyContent: "center",
-    fontSize: 26, marginBottom: 12,
-  },
-  title: { margin: "0 0 6px", fontSize: 21, fontWeight: 800, letterSpacing: "-0.3px" },
-  subtitle: { margin: 0, fontSize: 13, color: "rgba(255,255,255,0.4)", lineHeight: 1.5 },
 
-  section: { display: "flex", flexDirection: "column", gap: 10 },
-  sectionBody: {
-    background: "rgba(255,255,255,0.025)",
-    border: "1px solid rgba(255,255,255,0.06)",
-    borderRadius: 14, padding: "14px 16px",
+  // header
+  header: { display: "flex", alignItems: "center", gap: 14, marginBottom: 24 },
+  avatarCircle: {
+    width: 48, height: 48, borderRadius: "50%",
+    background: "linear-gradient(135deg,#FACC15,#f59e0b)",
+    color: "#000", fontWeight: 800, fontSize: 20,
+    display: "flex", alignItems: "center", justifyContent: "center",
+    flexShrink: 0,
   },
-  label: {
-    fontSize: 13.5, fontWeight: 700,
-    color: "rgba(255,255,255,0.75)",
-    display: "flex", alignItems: "center", gap: 10,
+  headerTitle: { margin: 0, fontWeight: 700, fontSize: 16 },
+  headerSub:   { margin: "3px 0 0", fontSize: 13, color: "rgba(255,255,255,0.45)" },
+
+  // progress
+  dots:      { display: "flex", gap: 6, marginBottom: 8 },
+  dot:       { height: 8, borderRadius: 4, transition: "all 0.35s" },
+  stepLabel: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", color: "#FACC15", marginBottom: 20 },
+
+  // step wrapper
+  stepContent: { padding: "0 2px 20px" },
+  question:    { fontSize: 17, fontWeight: 600, lineHeight: 1.45, marginBottom: 20, color: "#f0f0f0" },
+  accent:      { color: "#FACC15" },
+
+  // step 0 – yes/no
+  choiceRow: { display: "flex", gap: 12 },
+  choiceBtn: {
+    flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+    gap: 8, padding: "18px 12px",
+    background: "rgba(255,255,255,0.04)", border: "1.5px solid rgba(255,255,255,0.1)",
+    borderRadius: 16, color: "#fff", cursor: "pointer", fontSize: 14, fontWeight: 600,
+    fontFamily: "'DM Sans', sans-serif",
+    transition: "all 0.2s",
   },
-  qNum: {
-    fontSize: 10, fontWeight: 800, color: "#FACC15",
-    background: "rgba(250,204,21,0.1)",
-    padding: "3px 7px", borderRadius: 6, letterSpacing: 1,
+  choiceActive: {
+    background: "rgba(239,68,68,0.12)", border: "1.5px solid #ef4444", color: "#f87171",
   },
-  submitBtn: {
-    width: "100%", padding: "15px",
-    background: "#FACC15", border: "none", borderRadius: 14,
-    color: "#0f0f0f", fontSize: 15, fontWeight: 800,
-    cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
-    letterSpacing: "-0.2px",
+  choiceGoodActive: {
+    background: "rgba(74,222,128,0.12)", border: "1.5px solid #4ade80", color: "#4ade80",
+  },
+  choiceIcon: { fontSize: 28 },
+
+  // step 1 – behaviour tags
+  tagsGrid: { display: "flex", flexWrap: "wrap", gap: 10 },
+  tag: {
+    display: "flex", alignItems: "center", gap: 6,
+    padding: "9px 14px", borderRadius: 100,
+    background: "rgba(255,255,255,0.05)", border: "1.5px solid rgba(255,255,255,0.1)",
+    color: "rgba(255,255,255,0.75)", cursor: "pointer", fontSize: 13, fontWeight: 600,
+    fontFamily: "'DM Sans', sans-serif",
+    transition: "all 0.2s",
+  },
+  tagActive: {
+    background: "rgba(250,204,21,0.12)", border: "1.5px solid #FACC15", color: "#FACC15",
+  },
+
+  // step 2 – stars
+  stars: { display: "flex", justifyContent: "center", gap: 6, marginBottom: 6 },
+  star:  { background: "none", border: "none", fontSize: 44, cursor: "pointer", transition: "color 0.15s, transform 0.15s" },
+  ratingLabel: { textAlign: "center", fontSize: 14, fontWeight: 700, color: "#FACC15", marginBottom: 16 },
+  textarea: {
+    width: "100%", height: 90, background: "rgba(255,255,255,0.04)",
+    border: "1.5px solid rgba(255,255,255,0.1)", borderRadius: 14,
+    color: "#fff", padding: "12px 14px", fontSize: 14,
+    resize: "none", outline: "none", fontFamily: "'DM Sans', sans-serif",
+    boxSizing: "border-box",
+  },
+
+  // nav buttons
+  actions: { display: "flex", gap: 10, marginTop: 4 },
+  backBtn: {
+    flex: "0 0 auto", padding: "13px 20px",
+    background: "rgba(255,255,255,0.05)", border: "1.5px solid rgba(255,255,255,0.1)",
+    color: "rgba(255,255,255,0.6)", borderRadius: 14, cursor: "pointer",
+    fontSize: 14, fontWeight: 600, fontFamily: "'DM Sans', sans-serif",
+  },
+  nextBtn: {
+    flex: 1, padding: "14px 0",
+    background: "#FACC15", border: "none",
+    color: "#000", borderRadius: 14, cursor: "pointer",
+    fontSize: 15, fontWeight: 700, fontFamily: "'DM Sans', sans-serif",
+    transition: "opacity 0.2s",
+  },
+  skipBtn: {
+    width: "100%", marginTop: 12, padding: "10px 0",
+    background: "transparent", border: "none",
+    color: "rgba(255,255,255,0.3)", cursor: "pointer",
+    fontSize: 13, fontFamily: "'DM Sans', sans-serif",
   },
 };
+
+export default FeedbackModal;

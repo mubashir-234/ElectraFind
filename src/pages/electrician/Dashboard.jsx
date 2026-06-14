@@ -16,11 +16,12 @@ export default function ElectricianDashboard() {
   const [requests, setRequests] = useState([]);
   const [history, setHistory] = useState([]);
   const [activeBooking, setActiveBooking] = useState(null);
-  const [showChat, setShowChat] = useState(false);
   const [isVerified, setIsVerified] = useState(false);
   const [selectedArrivalTime, setSelectedArrivalTime] = useState(30);
   const [totalIncome, setTotalIncome] = useState(0);
-
+  const [isSharingLocation, setIsSharingLocation] = useState(false);
+  const [watchId, setWatchId] = useState(null);
+const [showChat, setShowChat] = useState(false);
   // Role Verification
   useEffect(() => {
     async function verifyElectrician() {
@@ -61,6 +62,37 @@ export default function ElectricianDashboard() {
     return () => unsub();
   }, [currentUser, isVerified]);
 
+  // Live Location Sharing
+  const toggleLiveLocation = async () => {
+    if (!activeBooking) return toast.error("No active booking found");
+
+    if (isSharingLocation) {
+      if (watchId) navigator.geolocation.clearWatch(watchId);
+      setIsSharingLocation(false);
+      toast.success("Live tracking stopped");
+      return;
+    }
+
+    if (!navigator.geolocation) return toast.error("Geolocation not supported");
+
+    const id = navigator.geolocation.watchPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+        await updateDoc(doc(db, "electricians", currentUser.uid), {
+          lat: latitude,
+          lng: longitude,
+          lastLocationUpdate: serverTimestamp()
+        });
+      },
+      () => toast.error("Failed to get location"),
+      { enableHighAccuracy: true }
+    );
+
+    setWatchId(id);
+    setIsSharingLocation(true);
+    toast.success("✅ Live tracking started!");
+  };
+
   const handleAccept = async (bookingId) => {
     try {
       await updateDoc(doc(db, "bookings", bookingId), {
@@ -85,30 +117,34 @@ export default function ElectricianDashboard() {
   };
 
   const handleWorkCompleted = async (bookingId, amount) => {
-    try {
-      await updateDoc(doc(db, "bookings", bookingId), {
-        status: "completed",
-        completedAt: serverTimestamp()
-      });
+  try {
+    await updateDoc(doc(db, "bookings", bookingId), {
+      status: "completed",
+      completedAt: serverTimestamp(),
+      feedbackSubmitted: false,     // ← This was missing
+    });
 
-      await updateDoc(doc(db, "electricians", currentUser.uid), {
-        totalIncome: increment(amount)
-      });
+    // Update electrician's total income
+    await updateDoc(doc(db, "electricians", currentUser.uid), {
+      totalIncome: increment(amount)
+    });
 
-      toast.success(`Job Completed Successfully! ₹${amount} Added`);
-    } catch (err) {
-      toast.error("Failed to complete job");
-    }
-  };
+    toast.success(`Job Completed Successfully! ₹${amount} Added`);
+
+    // Clean up active booking (keeps UI smooth)
+    setActiveBooking(null);
+
+  } catch (err) {
+    console.error(err);
+    toast.error("Failed to complete job");
+  }
+};
 
   const handleLogout = async () => {
-    try {
-      await setElectricianOnline(currentUser.uid, false);
-      await logout();
-      navigate("/");
-    } catch (err) {
-      toast.error("Logout failed");
-    }
+    if (watchId) navigator.geolocation.clearWatch(watchId);
+    await setElectricianOnline(currentUser.uid, false);
+    await logout();
+    navigate("/");
   };
 
   if (!isVerified) {
@@ -117,7 +153,6 @@ export default function ElectricianDashboard() {
 
   return (
     <div style={styles.container}>
-      {/* Navbar */}
       <nav style={styles.nav}>
         <div style={styles.logo}>
           <span style={{ fontSize: 28 }}>⚡</span>
@@ -137,7 +172,7 @@ export default function ElectricianDashboard() {
       </nav>
 
       <div style={styles.main}>
-        {/* Sidebar - Job History */}
+        {/* Sidebar - History */}
         <div style={styles.sidebar}>
           <h3 style={styles.sidebarTitle}>📜 Job History</h3>
           {history.length === 0 ? (
@@ -169,16 +204,26 @@ export default function ElectricianDashboard() {
               </p>
               <p style={styles.issue}>{activeBooking.description}</p>
 
-              <button 
-                onClick={() => handleWorkCompleted(activeBooking.id, activeBooking.rateOffer)}
-                style={styles.completeBtn}
-              >
+              <div style={styles.locationCard}>
+                <h4 style={{ margin: "0 0 12px 0", color: "#4ade80" }}>📍 Live Location Sharing</h4>
+                <p style={{ fontSize: 14, color: "#aaa", marginBottom: 16 }}>
+                  Share your real-time location so the customer can track your movement.
+                </p>
+                <button 
+                  onClick={toggleLiveLocation}
+                  style={{ ...styles.completeBtn, background: isSharingLocation ? "#ef4444" : "#3b82f6", marginBottom: 12 }}
+                >
+                  {isSharingLocation ? "⏹ STOP LIVE TRACKING" : "🚀 START LIVE TRACKING"}
+                </button>
+              </div>
+
+              <button onClick={() => handleWorkCompleted(activeBooking.id, activeBooking.rateOffer)} style={styles.completeBtn}>
                 ✅ Mark Job as Completed
               </button>
             </div>
           )}
 
-          {/* Incoming Requests */}
+          {/* Incoming Requests - FULLY FIXED */}
           <h3 style={styles.sectionTitle}>📥 Incoming Requests</h3>
 
           <AnimatePresence>
@@ -189,7 +234,13 @@ export default function ElectricianDashboard() {
               </div>
             ) : (
               requests.map((req, i) => (
-                <motion.div key={req.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.08 }} style={styles.requestCard}>
+                <motion.div 
+                  key={req.id} 
+                  initial={{ opacity: 0, y: 20 }} 
+                  animate={{ opacity: 1, y: 0 }} 
+                  transition={{ delay: i * 0.08 }} 
+                  style={styles.requestCard}
+                >
                   <div style={styles.requestHeader}>
                     <div>
                       <h4>{req.customerName}</h4>
@@ -203,7 +254,9 @@ export default function ElectricianDashboard() {
                   <p style={styles.issue}>{req.description}</p>
 
                   <div style={{ marginTop: 16 }}>
-                    <label style={{ fontSize: 13, color: "#aaa", display: "block", marginBottom: 8 }}>Estimated Arrival (minutes)</label>
+                    <label style={{ fontSize: 13, color: "#aaa", display: "block", marginBottom: 8 }}>
+                      Estimated Arrival (minutes)
+                    </label>
                     <input
                       type="number"
                       value={selectedArrivalTime}
@@ -227,7 +280,12 @@ export default function ElectricianDashboard() {
         {/* Chat Panel */}
         <AnimatePresence>
           {activeBooking && (
-            <motion.div initial={{ x: 400, opacity: 0 }} animate={{ x: 0, opacity: 1 }} exit={{ x: 400, opacity: 0 }} style={styles.chatPanel}>
+            <motion.div 
+              initial={{ x: 400, opacity: 0 }} 
+              animate={{ x: 0, opacity: 1 }} 
+              exit={{ x: 400, opacity: 0 }} 
+              style={styles.chatPanel}
+            >
               <div style={styles.chatHeader}>
                 <h3>💬 Live Chat</h3>
                 <button onClick={() => setShowChat(!showChat)} style={styles.toggleChatBtn}>
@@ -253,6 +311,7 @@ export default function ElectricianDashboard() {
   );
 }
 
+// Styles (Your Original Design Preserved)
 const styles = {
   container: { minHeight: "100vh", background: "#0a0a0a", color: "#fff", fontFamily: "'DM Sans', sans-serif" },
   nav: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "1.25rem 2.5rem", background: "rgba(17,17,17,0.98)", borderBottom: "1px solid rgba(250,204,21,0.15)", position: "sticky", top: 0, zIndex: 100, backdropFilter: "blur(12px)" },
@@ -282,6 +341,14 @@ const styles = {
   activeBookingCard: { background: "linear-gradient(145deg, #1a2a1f, #111)", border: "1px solid #4ade80", borderRadius: 20, padding: "2rem", marginBottom: "2.5rem" },
   activeHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, fontSize: 15, color: "#4ade80", fontWeight: 700 },
   issue: { fontSize: 15.5, lineHeight: 1.6, color: "#ddd", marginBottom: 20 },
+
+  locationCard: {
+    background: "rgba(59, 130, 246, 0.1)",
+    border: "1px solid rgba(59, 130, 246, 0.3)",
+    borderRadius: 16,
+    padding: "18px",
+    margin: "15px 0 20px 0"
+  },
 
   requestCard: { background: "#161616", border: "1px solid rgba(250,204,21,0.3)", borderRadius: 20, padding: "2rem", marginBottom: "2rem" },
   requestHeader: { display: "flex", justifyContent: "space-between", marginBottom: 20 },
